@@ -2,19 +2,23 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/// The layout task. Performs layout on the DOM, builds display lists and sends them to be
+//! The layout task. Performs layout on the DOM, builds display lists and sends them to be
 /// rendered.
 
 use css::matching::MatchMethods;
 use css::select::new_css_select_ctx;
 use dom::event::ReflowEvent;
-use dom::node::{AbstractNode, LayoutView, ScriptView};
+use dom::node::{AbstractNode, LayoutView};
 use layout::aux::{LayoutData, LayoutAuxMethods};
 use layout::box_builder::LayoutTreeBuilder;
 use layout::context::LayoutContext;
 use layout::debug::{BoxedMutDebugMethods, DebugMethods};
 use layout::display_list_builder::{DisplayListBuilder, FlowDisplayListBuilderMethods};
 use layout::flow::FlowContext;
+use layout_interface::{AddStylesheetMsg, BuildData, BuildMsg, ContentBoxQuery, ContentBoxResponse};
+use layout_interface::{ContentBoxesQuery, ContentBoxesResponse, ExitMsg, LayoutQuery};
+use layout_interface::{LayoutResponse, LayoutTask, MatchSelectorsDamage, Msg, NoDamage, QueryMsg};
+use layout_interface::{ReflowDamage};
 use scripting::script_task::{ScriptMsg, SendEventMsg};
 use util::task::spawn_listener;
 use util::time::time;
@@ -37,63 +41,20 @@ use newcss::types::OriginAuthor;
 use servo_net::image_cache_task::{ImageCacheTask, ImageResponseMsg};
 use servo_net::local_image_cache::LocalImageCache;
 use servo_util::tree::TreeUtils;
-use std::net::url::Url;
 
-pub type LayoutTask = SharedChan<Msg>;
-
-pub enum LayoutQuery {
-    ContentBox(AbstractNode<ScriptView>),
-    ContentBoxes(AbstractNode<ScriptView>),
-}
-
-pub type LayoutQueryResponse = Result<LayoutQueryResponse_, ()>;
-
-pub enum LayoutQueryResponse_ {
-    ContentRect(Rect<Au>),
-    ContentRects(~[Rect<Au>])
-}
-
-pub enum Msg {
-    AddStylesheet(Stylesheet),
-    BuildMsg(~BuildData),
-    QueryMsg(LayoutQuery, Chan<LayoutQueryResponse>),
-    ExitMsg
-}
-
-// Dirty bits for layout.
-pub enum Damage {
-    NoDamage,               // Document is clean; do nothing.
-    ReflowDamage,           // Reflow; don't perform CSS selector matching.
-    MatchSelectorsDamage,   // Perform CSS selector matching and reflow.
-}
-
-impl Damage {
-    fn add(&mut self, new_damage: Damage) {
-        match (*self, new_damage) {
-            (NoDamage, _) => *self = new_damage,
-            (ReflowDamage, NoDamage) => *self = ReflowDamage,
-            (ReflowDamage, new_damage) => *self = new_damage,
-            (MatchSelectorsDamage, _) => *self = MatchSelectorsDamage
-        }
-    }
-}
-
-pub struct BuildData {
-    node: AbstractNode<ScriptView>,
-    url: Url,
-    script_chan: SharedChan<ScriptMsg>,
-    window_size: Size2D<uint>,
-    script_join_chan: Chan<()>,
-    damage: Damage,
-}
-
-pub fn LayoutTask(render_task: RenderTask,
-                  img_cache_task: ImageCacheTask,
-                  opts: Opts) -> LayoutTask {
-    SharedChan::new(do spawn_listener::<Msg> |from_script| {
-        let mut layout = Layout(render_task.clone(), img_cache_task.clone(), from_script, &opts);
+pub fn create_layout_task(render_task: RenderTask, img_cache_task: ImageCacheTask, opts: Opts)
+                          -> LayoutTask {
+    let chan = do spawn_listener::<Msg> |from_script| {
+        let mut layout = Layout::new(render_task.clone(),
+                                     img_cache_task.clone(),
+                                     from_script,
+                                     &opts);
         layout.start();
-    })
+    };
+
+    LayoutTask {
+        chan: SharedChan::new(chan),
+    }
 }
 
 struct Layout {
@@ -102,50 +63,47 @@ struct Layout {
     local_image_cache: @mut LocalImageCache,
     from_script: Port<Msg>,
     font_ctx: @mut FontContext,
-    // This is used to root reader data
+
+    /// This is used to root reader data.
     layout_refs: ~[@mut LayoutData],
+
     css_select_ctx: @mut SelectCtx,
 }
 
-fn Layout(render_task: RenderTask, 
-          image_cache_task: ImageCacheTask,
-          from_script: Port<Msg>,
-          opts: &Opts)
-       -> Layout {
-    let fctx = @mut FontContext::new(opts.render_backend, true);
-
-    Layout {
-        render_task: render_task,
-        image_cache_task: image_cache_task.clone(),
-        local_image_cache: @mut LocalImageCache(image_cache_task),
-        from_script: from_script,
-        font_ctx: fctx,
-        layout_refs: ~[],
-        css_select_ctx: @mut new_css_select_ctx()
-    }
-}
-
 impl Layout {
+    fn new(render_task: RenderTask, 
+           image_cache_task: ImageCacheTask,
+           from_script: Port<Msg>,
+           opts: &Opts)
+           -> Layout {
+        let fctx = @mut FontContext::new(opts.render_backend, true);
+
+        Layout {
+            render_task: render_task,
+            image_cache_task: image_cache_task.clone(),
+            local_image_cache: @mut LocalImageCache(image_cache_task),
+            from_script: from_script,
+            font_ctx: fctx,
+            layout_refs: ~[],
+            css_select_ctx: @mut new_css_select_ctx()
+        }
+    }
 
     fn start(&mut self) {
         while self.handle_request() {
-            // loop indefinitely
+            // Loop indefinitely.
         }
     }
 
     fn handle_request(&mut self) -> bool {
-
         match self.from_script.recv() {
-            AddStylesheet(sheet) => {
-                self.handle_add_stylesheet(sheet);
-            }
+            AddStylesheetMsg(sheet) => self.handle_add_stylesheet(sheet),
             BuildMsg(data) => {
                 let data = Cell(data);
 
                 do time("layout: performing layout") {
                     self.handle_build(data.take());
                 }
-
             }
             QueryMsg(query, chan) => {
                 let chan = Cell(chan);
@@ -268,9 +226,9 @@ impl Layout {
 
     /// Handles a query from the script task. This is the main routine that DOM functions like
     /// `getClientRects()` or `getBoundingClientRect()` ultimately invoke.
-    fn handle_query(&self, query: LayoutQuery, reply_chan: Chan<LayoutQueryResponse>) {
+    fn handle_query(&self, query: LayoutQuery, reply_chan: Chan<Result<LayoutResponse,()>>) {
         match query {
-            ContentBox(node) => {
+            ContentBoxQuery(node) => {
                 // FIXME: Isolate this transmutation into a single "bridge" module.
                 let node: AbstractNode<LayoutView> = unsafe {
                     transmute(node)
@@ -295,14 +253,14 @@ impl Layout {
                                 error!("no boxes for node");
                                 Err(())
                             }
-                            Some(rect) => Ok(ContentRect(rect))
+                            Some(rect) => Ok(ContentBoxResponse(rect))
                         }
                     }
                 };
 
                 reply_chan.send(response)
             }
-            ContentBoxes(node) => {
+            ContentBoxesQuery(node) => {
                 // FIXME: Isolate this transmutation into a single "bridge" module.
                 let node: AbstractNode<LayoutView> = unsafe {
                     transmute(node)
@@ -316,7 +274,7 @@ impl Layout {
                             boxes.push(box.content_box());
                         }
 
-                        Ok(ContentRects(boxes))
+                        Ok(ContentBoxesResponse(boxes))
                     }
                 };
 

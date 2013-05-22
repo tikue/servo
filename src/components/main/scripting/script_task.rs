@@ -10,10 +10,10 @@ use dom::document::Document;
 use dom::event::{Event, ResizeEvent, ReflowEvent};
 use dom::node::define_bindings;
 use dom::window::Window;
-use layout::layout_task::{AddStylesheet, BuildData, BuildMsg, Damage, LayoutQuery};
-use layout::layout_task::{LayoutQueryResponse, LayoutTask, MatchSelectorsDamage, NoDamage};
-use layout::layout_task::{QueryMsg, ReflowDamage};
-use layout::layout_task;
+use layout_interface::{AddStylesheetMsg, BuildData, BuildMsg, Damage, LayoutQuery};
+use layout_interface::{LayoutResponse, LayoutTask, MatchSelectorsDamage, NoDamage};
+use layout_interface::{QueryMsg, ReflowDamage};
+use layout_interface;
 
 use core::cast::transmute;
 use core::cell::Cell;
@@ -285,7 +285,7 @@ impl ScriptContext {
 
     /// Handles a request to exit the script task and shut down layout.
     fn handle_exit_msg(&mut self) {
-        self.layout_task.send(layout_task::ExitMsg)
+        self.layout_task.chan.send(layout_interface::ExitMsg)
     }
 
     /// The entry point to document loading. Defines bindings, sets up the window and document
@@ -314,7 +314,7 @@ impl ScriptContext {
         // in the script task.
         loop {
               match html_parsing_result.style_port.recv() {
-                  Some(sheet) => self.layout_task.send(AddStylesheet(sheet)),
+                  Some(sheet) => self.layout_task.chan.send(AddStylesheetMsg(sheet)),
                   None => break,
               }
         }
@@ -409,7 +409,7 @@ impl ScriptContext {
                     damage: replace(&mut self.damage, NoDamage),
                 };
 
-                self.layout_task.send(BuildMsg(data))
+                self.layout_task.chan.send(BuildMsg(data))
             }
         }
 
@@ -417,11 +417,11 @@ impl ScriptContext {
     }
 
     /// Sends the given query to layout.
-    pub fn query_layout(&mut self, query: LayoutQuery) -> LayoutQueryResponse {
+    pub fn query_layout(&mut self, query: LayoutQuery) -> Result<LayoutResponse,()> {
          self.join_layout();
 
          let (response_port, response_chan) = comm::stream();
-         self.layout_task.send(QueryMsg(query, response_chan));
+         self.layout_task.chan.send(QueryMsg(query, response_chan));
          response_port.recv()
     }
 

@@ -8,8 +8,8 @@
 use css::matching::MatchMethods;
 use css::select::new_css_select_ctx;
 use dom::event::ReflowEvent;
-use dom::node::{AbstractNode, LayoutData};
-use layout::aux::LayoutAuxMethods;
+use dom::node::{AbstractNode, LayoutView, ScriptView};
+use layout::aux::{LayoutData, LayoutAuxMethods};
 use layout::box_builder::LayoutTreeBuilder;
 use layout::context::LayoutContext;
 use layout::debug::{BoxedMutDebugMethods, DebugMethods};
@@ -19,6 +19,7 @@ use scripting::script_task::{ScriptMsg, SendEventMsg};
 use util::task::spawn_listener;
 use util::time::time;
 
+use core::cast::transmute;
 use core::cell::Cell;
 use core::comm::{Chan, Port, SharedChan};
 use geom::point::Point2D;
@@ -41,8 +42,8 @@ use std::net::url::Url;
 pub type LayoutTask = SharedChan<Msg>;
 
 pub enum LayoutQuery {
-    ContentBox(AbstractNode),
-    ContentBoxes(AbstractNode)
+    ContentBox(AbstractNode<ScriptView>),
+    ContentBoxes(AbstractNode<ScriptView>),
 }
 
 pub type LayoutQueryResponse = Result<LayoutQueryResponse_, ()>;
@@ -78,7 +79,7 @@ impl Damage {
 }
 
 pub struct BuildData {
-    node: AbstractNode,
+    node: AbstractNode<ScriptView>,
     url: Url,
     script_chan: SharedChan<ScriptMsg>,
     window_size: Size2D<uint>,
@@ -168,7 +169,11 @@ impl Layout {
 
     /// The high-level routine that performs layout tasks.
     fn handle_build(&mut self, data: &BuildData) {
-        let node = &data.node;
+        // FIXME: Isolate this transmutation into a "bridge" module.
+        let node: &AbstractNode<LayoutView> = unsafe {
+            transmute(&data.node)
+        };
+
         // FIXME: Bad copy!
         let doc_url = copy data.url;
         let script_chan = data.script_chan.clone();
@@ -266,6 +271,11 @@ impl Layout {
     fn handle_query(&self, query: LayoutQuery, reply_chan: Chan<LayoutQueryResponse>) {
         match query {
             ContentBox(node) => {
+                // FIXME: Isolate this transmutation into a single "bridge" module.
+                let node: AbstractNode<LayoutView> = unsafe {
+                    transmute(node)
+                };
+
                 let response = match node.layout_data().flow {
                     None => {
                         error!("no flow present");
@@ -293,6 +303,11 @@ impl Layout {
                 reply_chan.send(response)
             }
             ContentBoxes(node) => {
+                // FIXME: Isolate this transmutation into a single "bridge" module.
+                let node: AbstractNode<LayoutView> = unsafe {
+                    transmute(node)
+                };
+
                 let response = match node.layout_data().flow {
                     None => Err(()),
                     Some(flow) => {

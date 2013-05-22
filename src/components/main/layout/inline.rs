@@ -4,7 +4,6 @@
 
 use core::cell::Cell;
 use core;
-use dom::node::{AbstractNode, LayoutView};
 use layout::box::{CannotSplit, GenericRenderBoxClass, ImageRenderBoxClass, RenderBox};
 use layout::box::{SplitDidFit, SplitDidNotFit, TextRenderBoxClass, UnscannedTextRenderBoxClass};
 use layout::context::LayoutContext;
@@ -20,6 +19,7 @@ use gfx::text::text_run::TextRun;
 use gfx::text::util::*;
 use newcss::values::{CSSTextAlignCenter, CSSTextAlignJustify, CSSTextAlignLeft};
 use newcss::values::{CSSTextAlignRight};
+use script::dom::node::{AbstractNode, LayoutView};
 use servo_util::range::Range;
 use std::deque::Deque;
 

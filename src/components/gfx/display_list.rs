@@ -139,5 +139,21 @@ impl<E> DisplayItem<E> {
             }
         }
     }
+
+    fn base<'a>(&'a self) -> &'a BaseDisplayItem<E> {
+        use core::cast::transmute_region;
+        unsafe {
+            match *self {
+                SolidColorDisplayItemClass(ref solid_color) => transmute_region(&solid_color.base),
+                TextDisplayItemClass(ref text) => transmute_region(&text.base),
+                ImageDisplayItemClass(ref image_item) => transmute_region(&image_item.base),
+                BorderDisplayItemClass(ref border) => transmute_region(&border.base)
+            }
+        }
+    }
+    
+    fn bounds(&self) -> Rect<Au> {
+        self.base().bounds
+    }
 }
 

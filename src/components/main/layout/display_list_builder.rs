@@ -25,7 +25,7 @@ pub trait ExtraDisplayListData {
 }
 
 impl ExtraDisplayListData for () {
-    fn new(box: @RenderBox) -> () {
+    fn new(_: @RenderBox) -> () {
         ()
     }
 }

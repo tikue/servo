@@ -7,6 +7,9 @@
 
 use core::comm::{Chan, SharedChan};
 use std::net::url::Url;
+use compositor::CompositorToken;
+
+pub use compositor;
 
 #[deriving(Clone)]
 pub struct EngineChan {
@@ -27,5 +30,7 @@ impl EngineChan {
 pub enum Msg {
     LoadUrlMsg(Url),
     ExitMsg(Chan<()>),
+    RendererReadyMsg(uint),
+    TokenSurrenderMsg(~CompositorToken),
 }
 

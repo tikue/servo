@@ -12,6 +12,7 @@ use layout_interface::{ContentBoxQuery, ContentBoxResponse};
 use script_task::task_from_context;
 use super::utils;
 
+use core::comm;
 use core::libc::c_uint;
 use core::ptr::null;
 use js::glue::bindgen::*;
@@ -216,13 +217,9 @@ extern fn HTMLImageElement_getWidth(cx: *JSContext, _argc: c_uint, vp: *mut JSVa
         let width = match node.type_id() {
             ElementNodeTypeId(HTMLImageElementTypeId) => {
                 let script_context = task_from_context(cx);
-                match (*script_context).query_layout(ContentBoxQuery(node)) {
-                    Ok(rect) => {
-                        match rect {
-                            ContentBoxResponse(rect) => rect.size.width.to_px(),
-                            _ => fail!(~"unexpected layout reply")
-                        }
-                    }
+                let (port, chan) = comm::stream();
+                match (*script_context).query_layout(ContentBoxQuery(node, chan), port) {
+                    Ok(ContentBoxResponse(rect)) => rect.size.width.to_px(),
                     Err(()) => 0
                 }
                 // TODO: if nothing is being rendered(?), return zero dimensions

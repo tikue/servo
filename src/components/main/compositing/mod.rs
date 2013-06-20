@@ -386,3 +386,4 @@ fn on_osmain(f: ~fn()) {
         f();
     }
 }
+

@@ -121,6 +121,7 @@ impl<C: RenderListener + Owned> RenderTask<C> {
                     let next_paint_msg = replace(&mut self.next_paint_msg, None);
                     match next_paint_msg {
                         Some((layer_buffer_set, layer_size)) => {
+                            println("retrieving cached paint msg");
                             self.compositor.paint(layer_buffer_set, layer_size);
                             self.compositor.set_render_state(IdleRenderState);
                         }
@@ -220,6 +221,7 @@ impl<C: RenderListener + Owned> RenderTask<C> {
                 self.compositor.paint(layer_buffer_set, render_layer.size);
             }
             else {
+                println("caching paint msg");
                 self.next_paint_msg = Some((layer_buffer_set, render_layer.size));
             }
             self.compositor.set_render_state(IdleRenderState);

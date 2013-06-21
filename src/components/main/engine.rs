@@ -101,7 +101,6 @@ impl Engine {
                     self.next_token_holder = Some(pipeline_id);
                 }
                 self.pipelines.insert(pipeline_id, pipeline);
-                return true
             }
 
             RendererReadyMsg(pipeline_id) => {
@@ -117,7 +116,6 @@ impl Engine {
                         }
                     }
                 };
-                return true        
             }
 
             TokenSurrenderMsg(token) => {
@@ -127,7 +125,6 @@ impl Engine {
                 do next_token_holder.map |id| {
                     self.bestow_compositor_token(id, token.take());
                 };
-                return true
             }
 
             ExitMsg(sender) => {
@@ -141,12 +138,15 @@ impl Engine {
                 return false
             }
         }
+        true
     }
     
     fn remove_active_pipeline(&mut self) {
-        do self.current_token_holder.map |id| {
-            self.pipelines.pop(id).unwrap().exit();
-        };
+// FIXME(tkuehn): currently, pipelines are not removed at all
+//        do self.current_token_holder.map |id| {
+//            self.pipelines.pop(id).unwrap().exit();
+//        };
+
         self.current_token_holder = None;
     }
 

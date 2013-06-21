@@ -273,6 +273,14 @@ impl CompositorTask {
                             texture_layer.common.set_transform(transform);
                         }
 
+                        while current_layer_child.is_some() {
+                            let trash = current_layer_child.get();
+                            do current_layer_child.get().with_common |common| {
+                                current_layer_child = common.next_sibling;
+                            }
+                            root_layer.remove_child(trash);
+                        }
+
                         // TODO: Recycle the old buffers; send them back to the renderer to reuse if
                         // it wishes.
 

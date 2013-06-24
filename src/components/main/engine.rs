@@ -6,7 +6,7 @@ use compositing::{CompositorChan, SetLayoutChan};
 use core::cell::Cell;
 use core::comm::Port;
 use gfx::opts::Opts;
-use gfx::render_task::{TokenBestowMsg, TokenProcureMsg};
+use gfx::render_task::{RenderChan, TokenBestowMsg, TokenProcureMsg};
 use pipeline::Pipeline;
 use servo_msg::compositor::{CompositorToken};
 use servo_msg::engine::{EngineChan, ExitMsg, LoadUrlMsg, Msg, RendererReadyMsg, TokenSurrenderMsg};
@@ -15,7 +15,7 @@ use servo_net::image_cache_task::{ImageCacheTask, ImageCacheTaskClient};
 use servo_net::resource_task::ResourceTask;
 use servo_net::resource_task;
 use servo_util::time::ProfilerChan;
-use std::treemap::TreeMap;
+use core::hashmap::HashMap;
 
 pub struct Engine {
     chan: EngineChan,
@@ -23,12 +23,47 @@ pub struct Engine {
     compositor_chan: CompositorChan,
     resource_task: ResourceTask,
     image_cache_task: ImageCacheTask,
-    pipelines: TreeMap<uint, Pipeline>,
+    pipelines: HashMap<str, Pipeline>,
     next_id: uint,
-    current_token_holder: Option<uint>,
+    current_token_holder: Option<RenderChan>,
     next_token_holder: Option<uint>,
     profiler_chan: ProfilerChan,
     opts: Opts,
+}
+
+pub struct Pipeline {
+    script_chan: ScriptChan,
+    presentations: HashMap<uint, Presentation>,
+}
+
+impl Pipeline {
+    pub fn create(compositor_chan: CompositorChan,
+                  resource_task: ResourceTask,
+                  image_cache_task: ImageCacheTask) -> Pipeline {
+
+        let (script_port, script_chan) = comm::stream();
+        let script_chan = ScriptChan::new(script_chan);
+        ScriptTask::create(compositor_chan.clone(),
+                           script_port,
+                           script_chan.clone(),
+                           resource_task.clone(),
+                           image_cache_task.clone());
+        Pipeline::new(script_chan)
+    }
+
+    pub fn new(script_chan) -> Pipeline {
+        Pipeline {
+            script_chan: script_chan,
+            presentations: HashMap::new(),
+        }
+    }
+
+    pub fn exit(&self) {
+        self.script_chan.send(ExitMsg);
+        for self.presentations.each |_, presentation| {
+            presentation.exit();
+        }
+    }
 }
 
 impl Engine {
@@ -55,7 +90,7 @@ impl Engine {
                     compositor_chan: compositor_chan.take(),
                     resource_task: resource_task.clone(),
                     image_cache_task: image_cache_task.clone(),
-                    pipelines: TreeMap::new(),
+                    pipelines: HashMap::new(),
                     next_id: 0,
                     current_token_holder: None,
                     next_token_holder: None,
@@ -86,18 +121,31 @@ impl Engine {
     fn handle_request(&mut self, request: Msg) -> bool {
         match request {
             LoadUrlMsg(url) => {
-                let pipeline_id = self.get_next_id();
-                let pipeline = Pipeline::create(pipeline_id,
-                                                self.chan.clone(),
-                                                self.compositor_chan.clone(),
-                                                self.image_cache_task.clone(),
-                                                self.resource_task.clone(),
-                                                self.profiler_chan.clone(),
-                                                copy self.opts);
+                let pipeline = match self.pipelines.find(url.host) {
+                    None => {
+                        let pipeline = Pipeline::create(self.compositor_chan.clone(),
+                                         self.resource_chan.clone(),
+                                         self.image_cache_task.clone());
+                        self.pipelines.insert(url.host, pipeline);
+                    }
+                    Some(pipeline) => pipeline
+                };
+                
                 if url.path.ends_with(".js") {
                     pipeline.script_chan.send(ExecuteMsg(url));
                 } else {
-                    pipeline.script_chan.send(LoadMsg(url));
+                    let presentation_id = self.get_next_id();
+                    let presentation = Presentation::create(presentation_id,
+                                                            self.chan.clone(),
+                                                            pipeline.script_chan.clone(),
+                                                            self.compositor_chan.clone(),
+                                                            self.image_cache_task.clone(),
+                                                            self.resource_task.clone(),
+                                                            self.profiler_chan.clone(),
+                                                            copy self.opts);
+                    pipeline.script_chan.send(LoadMsg(presentation_id,
+                                                      presentation.layout_chan.clone(),
+                                                      url));
                     self.next_token_holder = Some(pipeline_id);
                 }
                 self.pipelines.insert(pipeline_id, pipeline);
@@ -110,7 +158,7 @@ impl Engine {
                         match self.current_token_holder {
                             Some(ref id) => {
                                 let current_holder = self.pipelines.find(id).get();
-                                current_holder.render_chan.send(TokenProcureMsg);
+                                current_holder.send(TokenProcureMsg);
                             }
                             None => self.bestow_compositor_token(id, ~CompositorToken::new())
                         }
@@ -156,9 +204,10 @@ impl Engine {
             None => fail!("Id of pipeline that made token request does not have a \
                           corresponding struct in Engine's pipelines. This is a bug. :-("),
             Some(pipeline) => {
-                pipeline.render_chan.send(TokenBestowMsg(compositor_token));
-                self.compositor_chan.send(SetLayoutChan(pipeline.layout_chan.clone()));
-                self.current_token_holder = Some(*id);
+                let render_chan = pipeline.presentation.render_chan.clone();
+                render_chan.send(TokenBestowMsg(compositor_token));
+                self.compositor_chan.send(SetLayoutChan(pipeline.presentation.layout_chan.clone()));
+                self.current_token_holder = Some(render_chan);
                 self.next_token_holder = None;
             }
         }

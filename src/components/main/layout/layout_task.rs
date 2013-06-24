@@ -28,15 +28,15 @@ use gfx::render_task::{RenderMsg, RenderChan, RenderLayer};
 use newcss::select::SelectCtx;
 use newcss::stylesheet::Stylesheet;
 use newcss::types::OriginAuthor;
-use script::dom::event::ReflowEvent;
+use script::dom::event::{Event, ReflowEvent};
 use script::dom::node::{AbstractNode, LayoutView};
-use script::layout_interface::{AddStylesheetMsg, ContentBoxQuery};
+use script::layout_interface::{LayoutChan, AddStylesheetMsg, ContentBoxQuery};
 use script::layout_interface::{HitTestQuery, ContentBoxResponse, HitTestResponse};
 use script::layout_interface::{ContentBoxesQuery, ContentBoxesResponse, ExitMsg, LayoutQuery};
 use script::layout_interface::{MatchSelectorsDocumentDamage, Msg};
-use script::layout_interface::{QueryMsg, RouteScriptMsg, Reflow, ReflowDocumentDamage};
+use script::layout_interface::{QueryMsg, RouteScriptEventMsg, Reflow, ReflowDocumentDamage};
 use script::layout_interface::{ReflowForDisplay, ReflowMsg};
-use script::script_task::{ReflowCompleteMsg, ScriptChan, ScriptMsg, SendEventMsg};
+use script::script_task::{ReflowCompleteMsg, ScriptChan, ScriptMsg, SendEventMsg, LayoutMsg};
 use servo_net::image_cache_task::{ImageCacheTask, ImageResponseMsg};
 use servo_net::local_image_cache::LocalImageCache;
 use servo_util::tree::{TreeNodeRef, TreeUtils};
@@ -45,7 +45,9 @@ use servo_util::time;
 use std::net::url::Url;
 
 struct LayoutTask {
+    id: uint,
     port: Port<Msg>,
+    // necessary for make_on_image_available_cb()
     script_chan: ScriptChan,
     render_chan: RenderChan,
     image_cache_task: ImageCacheTask,
@@ -62,25 +64,28 @@ struct LayoutTask {
 }
 
 impl LayoutTask {
-    pub fn create(port: Port<Msg>,
-                              script_chan: ScriptChan,
-                              render_chan: RenderChan,
-                              img_cache_task: ImageCacheTask,
-                              opts: Opts,
-                              profiler_chan: ProfilerChan) {
+    pub fn create(id: uint,
+                  port: Port<Msg>,
+                  script_chan: ScriptChan,
+                  render_chan: RenderChan,
+                  img_cache_task: ImageCacheTask,
+                  opts: Opts,
+                  profiler_chan: ProfilerChan) {
         let port = Cell(port);
         do spawn {
-            let mut layout = LayoutTask::new(port.take(),
-                                         script_chan.clone(),
-                                         render_chan.clone(),
-                                         img_cache_task.clone(),
-                                         &opts,
-                                         profiler_chan.clone());
+            let mut layout = LayoutTask::new(id,
+                                             port.take(),
+                                             script_chan.clone(),
+                                             render_chan.clone(),
+                                             img_cache_task.clone(),
+                                             &opts,
+                                             profiler_chan.clone());
             layout.start();
         };
     }
 
-    fn new(port: Port<Msg>,
+    fn new(id: uint,
+           port: Port<Msg>,
            script_chan: ScriptChan,
            render_chan: RenderChan, 
            image_cache_task: ImageCacheTask,
@@ -90,6 +95,7 @@ impl LayoutTask {
         let fctx = @mut FontContext::new(opts.render_backend, true, profiler_chan.clone());
 
         LayoutTask {
+            id: id,
             port: port,
             script_chan: script_chan,
             render_chan: render_chan,
@@ -140,8 +146,8 @@ impl LayoutTask {
                     self.handle_query(query.take());
                 }
             }
-            RouteScriptMsg(script_msg) => {
-                self.route_script_msg(script_msg);
+            RouteScriptEventMsg(event) => {
+                self.route_script_msg(event);
             }
             ExitMsg => {
                 debug!("layout: ExitMsg received");
@@ -376,8 +382,8 @@ impl LayoutTask {
 
     // TODO(tkuehn): once there are multiple script tasks, this is where the layout task will
     // determine which script task should receive the message. The prototype will need to change
-    fn route_script_msg(&self, script_msg: ScriptMsg) {
-        self.script_chan.send(script_msg);
+    fn route_script_msg(&self, event: Event) {
+        self.script_chan.send(SendEventMsg(self.id, event));
     }
 
     // When images can't be loaded in time to display they trigger
@@ -394,7 +400,7 @@ impl LayoutTask {
         let f: @fn() -> ~fn(ImageResponseMsg) = || {
             let script_chan = script_chan.clone();
             let f: ~fn(ImageResponseMsg) = |_| {
-                script_chan.send(SendEventMsg(ReflowEvent))
+                script_chan.send(SendEventMsg(self.id, ReflowEvent))
             };
             f
         };

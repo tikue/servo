@@ -173,7 +173,8 @@ impl CompositorTask {
             do window.set_resize_callback |width, height| {
                 debug!("osmain: window resized to %ux%u", width, height);
                 *window_size = Size2D(width, height);
-                layout_chan_clone.chan.send(RouteScriptMsg(SendEventMsg(ResizeEvent(width, height))));
+                let event = ResizeEvent(width, height));
+                layout_chan_clone.send(RouteScriptEventMsg(event));
             }
 
             let layout_chan_clone = layout_chan.clone();
@@ -181,7 +182,9 @@ impl CompositorTask {
             // When the user enters a new URL, load it.
             do window.set_load_url_callback |url_string| {
                 debug!("osmain: loading URL `%s`", url_string);
-                layout_chan_clone.chan.send(RouteScriptMsg(LoadMsg(url::make_url(url_string.to_str(), None))));
+                let load_msg = LoadMsg(layout_chan_clone.clone(),
+                                       url::make_url(url_string.to_str(), None));
+                layout_chan_clone.send(RouteScriptMsg(load_msg));
             }
 
             let layout_chan_clone = layout_chan.clone();
@@ -203,7 +206,8 @@ impl CompositorTask {
                         event = MouseUpEvent(button, world_mouse_point(layer_mouse_point));
                     }
                 }
-                layout_chan_clone.chan.send(RouteScriptMsg(SendEventMsg(event)));
+                let send_event_msg = SendEventMsg(layout_chan_clone.clone(), event);
+                layout_chan_clone.send(RouteScriptMsg(send_event_msg));
             }
         };
 

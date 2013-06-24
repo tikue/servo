@@ -7,6 +7,7 @@
 /// from layout.
 
 use dom::node::{AbstractNode, ScriptView, LayoutView};
+use dom::event::Event;
 use script_task::{ScriptMsg, ScriptChan};
 
 use core::comm::{Chan, SharedChan};
@@ -28,12 +29,10 @@ pub enum Msg {
     ReflowMsg(~Reflow),
 
     /// Performs a synchronous layout request.
-    ///
-    /// FIXME(pcwalton): As noted below, this isn't very type safe.
     QueryMsg(LayoutQuery),
 
     /// Routes a message (usually from the compositor) to the appropriate script task
-    RouteScriptMsg(ScriptMsg),
+    RouteScriptEventMsg(Event),
 
     /// Requests that the layout task shut down and exit.
     ExitMsg,

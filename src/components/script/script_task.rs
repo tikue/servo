@@ -13,13 +13,13 @@ use dom::element::Element;
 use dom::event::{Event, ResizeEvent, ReflowEvent, ClickEvent, MouseDownEvent, MouseUpEvent};
 use dom::node::{AbstractNode, ScriptView, define_bindings};
 use dom::window::Window;
-use layout_interface::{AddStylesheetMsg, DocumentDamage};
+use layout_interface::{AddStylesheetMsg, DocumentDamage, LayoutChan};
 use layout_interface::{DocumentDamageLevel, HitTestQuery, HitTestResponse, LayoutQuery};
-use layout_interface::{LayoutChan, MatchSelectorsDocumentDamage, QueryMsg, Reflow};
+use layout_interface::{MatchSelectorsDocumentDamage, QueryMsg, Reflow};
 use layout_interface::{ReflowDocumentDamage, ReflowForDisplay, ReflowForScriptQuery, ReflowGoal};
 use layout_interface::ReflowMsg;
 use layout_interface;
-use servo_msg::engine::{EngineChan, LoadUrlMsg, RendererReadyMsg};
+use servo_msg::engine::{EngineChan, LoadUrlMsg};
 
 use core::cast::transmute;
 use core::cell::Cell;
@@ -45,19 +45,20 @@ use servo_util::tree::TreeNodeRef;
 use servo_util::url::make_url;
 use std::net::url::Url;
 use std::net::url;
+use core::hashmap::HashMap;
 
 /// Messages used to control the script task.
 pub enum ScriptMsg {
-    /// Loads a new URL.
-    LoadMsg(Url),
+    /// Sends a Url to be loaded, along with a handle to the responsible layout
+    LoadMsg(uint, LayoutChan, Url),
     /// Executes a standalone script.
     ExecuteMsg(Url),
-    /// Sends a DOM event.
-    SendEventMsg(Event),
+    /// Sends a DOM event, along with the active presentation id
+    SendEventMsg(uint, Event),
     /// Fires a JavaScript timeout.
     FireTimerMsg(~TimerData),
     /// Notifies script that reflow is finished.
-    ReflowCompleteMsg,
+    ReflowCompleteMsg(uint),
     /// Exits the engine.
     ExitMsg,
 }
@@ -88,32 +89,42 @@ pub struct Frame {
     url: Url,
 }
 
+/// Encapsulates a handle to a layout and its associated frame
+pub struct LayoutInfo {
+    chan: LayoutChan,
+    /// The outermost frame. This frame contains the document, window, and page URL.
+    root_frame: Frame,
+    dom_static: GlobalStaticData,
+
+    /// The port that we will use to join layout. If this is `None`, then layout is not currently
+    /// running.
+    layout_join_port: Option<Port<()>>,
+
+    /// What parts of the document are dirty, if any.
+    damage: Option<DocumentDamage>,
+}
+
 /// Information for an entire page. Pages are top-level browsing contexts and can contain multiple
 /// frames.
 ///
 /// FIXME: Rename to `Page`, following WebKit?
 pub struct ScriptTask {
-    /// A unique identifier to the script's pipeline
-    id: uint,
-    /// A handle to the layout task.
-    layout_chan: LayoutChan,
+    /// A handle to all the layouts and their frames via their associated id's
+    layout_map: HashMap<uint, LayoutInfo>,
     /// A handle to the image cache task.
     image_cache_task: ImageCacheTask,
     /// A handle to the resource task.
     resource_task: ResourceTask,
 
-    /// The port that we will use to join layout. If this is `None`, then layout is not currently
-    /// running.
-    layout_join_port: Option<Port<()>>,
     /// The port on which we receive messages (load URL, exit, etc.)
-    script_port: Port<ScriptMsg>,
+    port: Port<ScriptMsg>,
     /// A channel for us to hand out when we want some other task to be able to send us script
     /// messages.
-    script_chan: ScriptChan,
+    chan: ScriptChan,
 
     /// For communicating load url messages to the engine
     engine_chan: EngineChan,
-    /// For permission to communicate ready state messages to the compositor
+    /// For communicating ready state messages to the compositor
     compositor: @ScriptListener,
 
     /// The JavaScript runtime.
@@ -122,19 +133,14 @@ pub struct ScriptTask {
     js_context: @Cx,
     /// The JavaScript compartment.
     js_compartment: @mut Compartment,
-
     /// Global static data related to the DOM.
     dom_static: GlobalStaticData,
     /// Whether the JS bindings have been initialized.
     bindings_initialized: bool,
 
-    /// The outermost frame. This frame contains the document, window, and page URL.
-    root_frame: Option<Frame>,
-
     /// The current size of the window, in pixels.
     window_size: Size2D<uint>,
-    /// What parts of the document are dirty, if any.
-    damage: Option<DocumentDamage>,
+
 }
 
 fn global_script_context_key(_: @ScriptTask) {}
@@ -164,11 +170,9 @@ impl Drop for ScriptTask {
 
 impl ScriptTask {
     /// Creates a new script task.
-    pub fn new(id: uint,
-               compositor: @ScriptListener,
-               layout_chan: LayoutChan,
-               script_port: Port<ScriptMsg>,
-               script_chan: ScriptChan,
+    pub fn new(compositor: @ScriptListener,
+               port: Port<ScriptMsg>,
+               chan: ScriptChan,
                engine_chan: EngineChan,
                resource_task: ResourceTask,
                img_cache_task: ImageCacheTask)
@@ -185,16 +189,14 @@ impl ScriptTask {
         };
 
         let script_task = @mut ScriptTask {
-            id: id,
             compositor: compositor,
 
-            layout_chan: layout_chan,
+            layout_map: HashMap::new(),
             image_cache_task: img_cache_task,
             resource_task: resource_task,
 
-            layout_join_port: None,
-            script_port: script_port,
-            script_chan: script_chan,
+            port: port,
+            chan: chan,
 
             engine_chan: engine_chan,
 
@@ -205,10 +207,7 @@ impl ScriptTask {
             dom_static: GlobalStaticData(),
             bindings_initialized: false,
 
-            root_frame: None,
-
             window_size: Size2D(800, 600),
-            damage: None,
         };
         // Indirection for Rust Issue #6248, dynamic freeze scope artifically extended
         let script_task_ptr = {
@@ -232,25 +231,21 @@ impl ScriptTask {
         }
     }
 
-    pub fn create<C: ScriptListener + Owned>(id: uint,
-                  compositor: C,
-                  layout_chan: LayoutChan,
-                  script_port: Port<ScriptMsg>,
-                  script_chan: ScriptChan,
-                  engine_chan: EngineChan,
-                  resource_task: ResourceTask,
-                  image_cache_task: ImageCacheTask) {
+    pub fn create<C: ScriptListener + Owned>(compositor: C,
+                                             port: Port<ScriptMsg>,
+                                             chan: ScriptChan,
+                                             engine_chan: EngineChan,
+                                             resource_task: ResourceTask,
+                                             image_cache_task: ImageCacheTask) {
         let compositor = Cell(compositor);
-        let script_port = Cell(script_port);
+        let port = Cell(port);
         // FIXME: rust#6399
         let mut the_task = task();
         the_task.sched_mode(SingleThreaded);
         do spawn {
-            let script_task = ScriptTask::new(id,
-                                              @compositor.take() as @ScriptListener,
-                                              layout_chan.clone(),
-                                              script_port.take(),
-                                              script_chan.clone(),
+            let script_task = ScriptTask::new(@compositor.take() as @ScriptListener,
+                                              port.take(),
+                                              chan.clone(),
                                               engine_chan.clone(),
                                               resource_task.clone(),
                                               image_cache_task.clone());
@@ -260,25 +255,25 @@ impl ScriptTask {
 
     /// Handles an incoming control message.
     fn handle_msg(&mut self) -> bool {
-        match self.script_port.recv() {
-            LoadMsg(url) => {
-                self.load(url);
+        match self.port.recv() {
+            LoadMsg(id, layout_chan, url) => {
+                self.load(id, layout_chan, url);
                 true
             }
             ExecuteMsg(url) => {
                 self.handle_execute_msg(url);
                 true
             }
-            SendEventMsg(event) => {
-                self.handle_event(event);
+            SendEventMsg(id, event) => {
+                self.handle_event(id, event);
                 true
             }
             FireTimerMsg(timer_data) => {
                 self.handle_fire_timer_msg(timer_data);
                 true
             }
-            ReflowCompleteMsg => {
-                self.handle_reflow_complete_msg();
+            ReflowCompleteMsg(id) => {
+                self.handle_reflow_complete_msg(id);
                 true
             }
             ExitMsg => {
@@ -322,29 +317,28 @@ impl ScriptTask {
                              null(),
                              &rval);
 
-        self.reflow(ReflowForScriptQuery)
+        for self.layout_map.each_value |&layout_info| {
+            self.reflow(layout_info, ReflowForScriptQuery)
+        }
     }
 
     /// Handles a notification that reflow completed.
-    fn handle_reflow_complete_msg(&mut self) {
-        self.layout_join_port = None;
-        self.engine_chan.send(RendererReadyMsg(self.id));
+    fn handle_reflow_complete_msg(&mut self, id: uint) {
+        self.layout_map.find(&id).get().layout_join_port = None;
         self.compositor.set_ready_state(FinishedLoading);
     }
 
-    /// Handles a request to exit the script task and shut down layout.
+    /// Handles a request to exit the script task.
     fn handle_exit_msg(&mut self) {
-        self.join_layout();
-        for self.root_frame.each |frame| {
-            frame.document.teardown();
+        for self.layout_map.each_value |&layout_info| {
+            self.join_layout(layout_info);
+            layout_info.root_frame.document.teardown();
         }
-
-        self.layout_chan.send(layout_interface::ExitMsg)
     }
 
     /// The entry point to document loading. Defines bindings, sets up the window and document
     /// objects, parses HTML and CSS, and kicks off initial layout.
-    fn load(&mut self, url: Url) {
+    fn load(&mut self, id:uint, layout_chan: LayoutChan, url: Url) {
         // Define the script DOM bindings.
         //
         // FIXME: Can this be done earlier, to save the flag?
@@ -361,6 +355,7 @@ impl ScriptTask {
                                                                  self.resource_task.clone(),
                                                                  self.image_cache_task.clone());
 
+
         let root_node = html_parsing_result.root;
 
         // Send style sheets over to layout.
@@ -369,7 +364,7 @@ impl ScriptTask {
         // in the script task.
         loop {
               match html_parsing_result.style_port.recv() {
-                  Some(sheet) => self.layout_chan.send(AddStylesheetMsg(sheet)),
+                  Some(sheet) => layout_chan.send(AddStylesheetMsg(sheet)),
                   None => break,
               }
         }
@@ -379,7 +374,7 @@ impl ScriptTask {
         debug!("js_scripts: %?", js_scripts);
 
         // Create the window and document objects.
-        let window = Window::new(self.script_chan.clone(), &mut *self);
+        let window = Window::new(self.chan.clone(), &mut *self);
         let document = Document(root_node, Some(window));
 
         // Tie the root into the document.
@@ -388,18 +383,27 @@ impl ScriptTask {
         }
 
         // Create the root frame.
-        self.root_frame = Some(Frame {
+        let root_frame = Frame {
             document: document,
             window: window,
-            url: url
-        });
+            url: url,
+        };
+
+        let layout_info = LayoutInfo {
+            chan: layout_chan,
+            root_frame: root_frame,
+            dom_static: GlobalStaticData(),
+            layout_join_port: None,
+            damage: None,
+        };
+        self.layout_map.insert(id, layout_info);
 
         // Perform the initial reflow.
-        self.damage = Some(DocumentDamage {
+        layout_info.damage = Some(DocumentDamage {
             root: root_node,
             level: MatchSelectorsDocumentDamage,
         });
-        self.reflow(ReflowForDisplay);
+        self.reflow(layout_info, ReflowForDisplay);
 
         // Define debug functions.
         self.js_compartment.define_functions(debug_fns);
@@ -415,9 +419,9 @@ impl ScriptTask {
 
     /// Sends a ping to layout and waits for the response. The response will arrive when the
     /// layout task has finished any pending request messages.
-    fn join_layout(&mut self) {
-        if self.layout_join_port.is_some() {
-            let join_port = replace(&mut self.layout_join_port, None);
+    fn join_layout(&mut self, layout_info: LayoutInfo) {
+        if layout_info.layout_join_port.is_some() {
+            let join_port = replace(&mut layout_info.layout_join_port, None);
             match join_port {
                 Some(ref join_port) => {
                     if !join_port.peek() {
@@ -438,36 +442,32 @@ impl ScriptTask {
     /// computation to finish.
     ///
     /// This function fails if there is no root frame.
-    fn reflow(&mut self, goal: ReflowGoal) {
+    fn reflow(&mut self, layout_info: LayoutInfo, goal: ReflowGoal) {
         debug!("script: performing reflow");
 
         // Now, join the layout so that they will see the latest changes we have made.
-        self.join_layout();
+        self.join_layout(layout_info);
 
         // Tell the user that we're performing layout.
         self.compositor.set_ready_state(PerformingLayout);
 
         // Layout will let us know when it's done.
         let (join_port, join_chan) = comm::stream();
-        self.layout_join_port = Some(join_port);
+        layout_info.layout_join_port = Some(join_port);
+        let root_frame = layout_info.root_frame;
 
-        match self.root_frame {
-            None => fail!(~"Tried to relayout with no root frame!"),
-            Some(ref root_frame) => {
-                // Send new document and relevant styles to layout.
-                let reflow = ~Reflow {
-                    document_root: root_frame.document.root,
-                    url: copy root_frame.url,
-                    goal: goal,
-                    window_size: self.window_size,
-                    script_chan: self.script_chan.clone(),
-                    script_join_chan: join_chan,
-                    damage: replace(&mut self.damage, None).unwrap(),
-                };
+        // Send new document and relevant styles to layout.
+        let reflow = ~Reflow {
+            document_root: root_frame.document.root,
+            url: copy root_frame.url,
+            goal: goal,
+            window_size: self.window_size,
+            script_chan: self.chan.clone(),
+            script_join_chan: join_chan,
+            damage: replace(&mut layout_info.damage, None).unwrap(),
+        };
 
-                self.layout_chan.send(ReflowMsg(reflow))
-            }
-        }
+        layout_info.chan.send(ReflowMsg(reflow));
 
         debug!("script: layout forked")
     }
@@ -475,20 +475,23 @@ impl ScriptTask {
     /// Reflows the entire document.
     ///
     /// FIXME: This should basically never be used.
-    pub fn reflow_all(&mut self, goal: ReflowGoal) {
-        for self.root_frame.each |root_frame| {
-            ScriptTask::damage(&mut self.damage,
-                                  root_frame.document.root,
-                                  MatchSelectorsDocumentDamage)
-        }
+    pub fn reflow_all(&mut self, layout_info: LayoutInfo, goal: ReflowGoal) {
+        ScriptTask::damage(&mut layout_info.damage,
+                           layout_info.root_frame.document.root,
+                           MatchSelectorsDocumentDamage);
 
-        self.reflow(goal)
+        self.reflow(layout_info, goal)
     }
 
     /// Sends the given query to layout.
-    pub fn query_layout<T: Owned>(&mut self, query: LayoutQuery, response_port: Port<Result<T, ()>>) -> Result<T,()> {
-        self.join_layout();
-        self.layout_chan.send(QueryMsg(query));
+    pub fn query_layout<T: Owned>(&mut self,
+                                  layout_info: LayoutInfo,
+                                  query: LayoutQuery,
+                                  response_port:
+                                  Port<Result<T, ()>>)
+                                  -> Result<T,()> {
+        self.join_layout(layout_info);
+        layout_info.chan.send(QueryMsg(query));
         response_port.recv()
     }
 
@@ -515,21 +518,19 @@ impl ScriptTask {
     /// This is the main entry point for receiving and dispatching DOM events.
     ///
     /// TODO: Actually perform DOM event dispatch.
-    fn handle_event(&mut self, event: Event) {
+    fn handle_event(&mut self, id: uint, event: Event) {
         match event {
             ResizeEvent(new_width, new_height) => {
                 debug!("script got resize event: %u, %u", new_width, new_height);
 
                 self.window_size = Size2D(new_width, new_height);
 
-                for self.root_frame.each |root_frame| {
-                    ScriptTask::damage(&mut self.damage,
-                                          root_frame.document.root,
-                                          ReflowDocumentDamage);
-                }
+                for self.layout_map.each_value |layout_info| {
+                    ScriptTask::damage(&mut layout_info.damage,
+                                       layout_info.root_frame.document.root,
+                                       ReflowDocumentDamage);
 
-                if self.root_frame.is_some() {
-                    self.reflow(ReflowForDisplay)
+                    self.reflow(*layout_info, ReflowForDisplay)
                 }
             }
 
@@ -537,25 +538,21 @@ impl ScriptTask {
             ReflowEvent => {
                 debug!("script got reflow event");
 
-                for self.root_frame.each |root_frame| {
-                    ScriptTask::damage(&mut self.damage,
-                                          root_frame.document.root,
-                                          MatchSelectorsDocumentDamage);
-                }
+                for self.layout_map.each_value |layout_info| {
+                    ScriptTask::damage(&mut layout_info.damage,
+                                       layout_info.root_frame.document.root,
+                                       MatchSelectorsDocumentDamage);
 
-                if self.root_frame.is_some() {
-                    self.reflow(ReflowForDisplay)
+                    self.reflow(*layout_info, ReflowForDisplay)
                 }
             }
 
             ClickEvent(_button, point) => {
+                let layout_info = *self.layout_map.find(&id).get();
                 debug!("ClickEvent: clicked at %?", point);
-                let root = match self.root_frame {
-                    Some(ref frame) => frame.document.root,
-                    None => fail!("root frame is None")
-                };
+                let root = layout_info.root_frame;
                 let (port, chan) = comm::stream();
-                match self.query_layout(HitTestQuery(root, point, chan), port) {
+                match self.query_layout(layout_info, HitTestQuery(root.document.root, point, chan), port) {
                     Ok(node) => match node {
                         HitTestResponse(node) => {
                             debug!("clicked on %?", node.debug_str());
@@ -572,7 +569,7 @@ impl ScriptTask {
                             if node.is_element() {
                                 do node.with_imm_element |element| {
                                     match element.tag_name {
-                                        ~"a" => self.load_url_from_element(element),
+                                        ~"a" => self.load_url_from_element(layout_info, element),
                                         _ => {}
                                     }
                                 }
@@ -589,15 +586,12 @@ impl ScriptTask {
         }
     }
 
-    priv fn load_url_from_element(&self, element: &Element) {
+    priv fn load_url_from_element(&self, layout_info: LayoutInfo, element: &Element) {
         // if the node's element is "a," load url from href attr
         for element.attrs.each |attr| {
             if attr.name == ~"href" {
                 debug!("clicked on link to %?", attr.value); 
-                let current_url = match self.root_frame {
-                    Some(ref frame) => Some(frame.url.clone()),
-                    None => None
-                };
+                let current_url = Some(layout_info.root_frame.url.clone());
                 let url = make_url(attr.value.clone(), current_url);
                 self.engine_chan.send(LoadUrlMsg(url));
             }

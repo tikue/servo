@@ -9,7 +9,7 @@ use azure::azure_hl::{B8G8R8A8, DrawTarget};
 use display_list::DisplayList;
 use servo_msg::compositor::{RenderListener, IdleRenderState, RenderingRenderState, LayerBuffer};
 use servo_msg::compositor::{CompositorToken, LayerBufferSet};
-use servo_msg::engine::{EngineChan, TokenSurrenderMsg};
+use servo_msg::engine::{EngineChan, RendererReadyMsg, TokenSurrenderMsg};
 use font_context::FontContext;
 use geom::matrix2d::Matrix2D;
 use geom::point::Point2D;
@@ -54,6 +54,8 @@ impl RenderChan {
 }
 
 priv struct RenderTask<C> {
+    /// Uniquely identifies the renderer to the engine
+    id: uint,
     port: Port<Msg>,
     compositor: C,
     font_ctx: @mut FontContext,
@@ -73,7 +75,8 @@ priv struct RenderTask<C> {
 }
 
 impl<C: RenderListener + Owned> RenderTask<C> {
-    pub fn create(port: Port<Msg>,
+    pub fn create(id: uint,
+                  port: Port<Msg>,
                   compositor: C,
                   opts: Opts,
                   engine_chan: EngineChan,
@@ -92,6 +95,7 @@ impl<C: RenderListener + Owned> RenderTask<C> {
 
             // FIXME: rust/#5967
             let mut render_task = RenderTask {
+                id: id,
                 port: port.take(),
                 compositor: compositor,
                 font_ctx: @mut FontContext::new(opts.render_backend,
@@ -222,6 +226,7 @@ impl<C: RenderListener + Owned> RenderTask<C> {
             }
             else {
                 println("caching paint msg");
+                self.engine_chan.send(RendererReadyMsg(self.id));
                 self.next_paint_msg = Some((layer_buffer_set, render_layer.size));
             }
             self.compositor.set_render_state(IdleRenderState);

@@ -127,6 +127,7 @@ impl Engine {
                                          self.resource_chan.clone(),
                                          self.image_cache_task.clone());
                         self.pipelines.insert(url.host, pipeline);
+                        pipeline
                     }
                     Some(pipeline) => pipeline
                 };

@@ -4,6 +4,7 @@
 
 use dom::clientrect::ClientRect;
 use dom::bindings::utils::WrapperCache;
+use dom::window::Window;
 
 pub struct ClientRectList {
     wrapper: WrapperCache,
@@ -11,12 +12,12 @@ pub struct ClientRectList {
 }
 
 pub impl ClientRectList {
-    fn new(rects: ~[@mut ClientRect]) -> @mut ClientRectList {
+    fn new(owner: &Window, rects: ~[@mut ClientRect]) -> @mut ClientRectList {
         let list = @mut ClientRectList {
             wrapper: WrapperCache::new(),
             rects: rects
         };
-        list.init_wrapper();
+        list.init_wrapper(owner);
         list
     }
 

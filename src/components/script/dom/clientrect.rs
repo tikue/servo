@@ -3,6 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use dom::bindings::utils::WrapperCache;
+use dom::window::Window;
 
 pub struct ClientRect {
     wrapper: WrapperCache,
@@ -13,7 +14,12 @@ pub struct ClientRect {
 }
 
 impl ClientRect {
-    pub fn new(top: f32, bottom: f32, left: f32, right: f32) -> @mut ClientRect {
+    pub fn new(owner: &Window,
+               top: f32,
+               bottom: f32,
+               left: f32,
+               right: f32) ->
+               @mut ClientRect {
         let rect = @mut ClientRect {
             top: top,
             bottom: bottom,
@@ -21,7 +27,7 @@ impl ClientRect {
             right: right,
             wrapper: WrapperCache::new()
         };
-        rect.init_wrapper();
+        rect.init_wrapper(owner);
         rect
     }
 

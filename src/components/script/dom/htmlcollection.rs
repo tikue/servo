@@ -5,6 +5,7 @@
 use dom::bindings::utils::WrapperCache;
 use dom::bindings::utils::{DOMString, ErrorResult};
 use dom::node::{AbstractNode, ScriptView};
+use dom::window::Window;
 
 use js::jsapi::{JSObject, JSContext};
 
@@ -14,12 +15,12 @@ pub struct HTMLCollection {
 }
 
 pub impl HTMLCollection {
-    fn new(elements: ~[AbstractNode<ScriptView>]) -> @mut HTMLCollection {
+    fn new(owner: &Window, elements: ~[AbstractNode<ScriptView>]) -> @mut HTMLCollection {
         let collection = @mut HTMLCollection {
             elements: elements,
             wrapper: WrapperCache::new()
         };
-        collection.init_wrapper();
+        collection.init_wrapper(owner);
         collection
     }
     

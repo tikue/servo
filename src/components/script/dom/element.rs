@@ -159,7 +159,7 @@ pub impl<'self> Element {
     }
 
     fn getClientRects(&self) -> Option<@mut ClientRectList> {
-        let rects = match self.parent.owner_doc {
+        let (window, rects) = match self.parent.owner_doc {
             Some(doc) => {
                 match doc.window {
                     Some(win) => {
@@ -169,34 +169,39 @@ pub impl<'self> Element {
                             &mut *win.script_task
                         };
                         let (port, chan) = comm::stream();
-                        match script_task.query_layout(ContentBoxesQuery(node, chan), port) {
+                        let layout_info = win.layout_info.get();
+                        match script_task.query_layout(layout_info,
+                                                       ContentBoxesQuery(node, chan),
+                                                       port) {
                             Ok(ContentBoxesResponse(rects)) => {
-                                do rects.map |r| {
+                                let rects = do rects.map |r| {
                                     ClientRect::new(
+                                         win,
                                          r.origin.y.to_f32(),
                                          (r.origin.y + r.size.height).to_f32(),
                                          r.origin.x.to_f32(),
                                          (r.origin.x + r.size.width).to_f32())
-                                }
+                                };
+                                (Some(win), rects)
                             },
                             Err(()) => {
                                 debug!("layout query error");
-                                ~[]
+                                (Some(win), ~[])
                             }
                         }
                     }
                     None => {
                         debug!("no window");
-                        ~[]
+                        (None, ~[])
                     }
                 }
             }
             None => {
                 debug!("no document");
-                ~[]
+                (None, ~[])
             }
         };
-        Some(ClientRectList::new(rects))
+        Some(ClientRectList::new(window.get(), rects))
     }
 
     fn getBoundingClientRect(&self) -> Option<@mut ClientRect> {
@@ -208,9 +213,12 @@ pub impl<'self> Element {
                         assert!(node.is_element());
                         let script_task = unsafe { &mut *win.script_task };
                         let (port, chan) = comm::stream();
-                        match script_task.query_layout(ContentBoxQuery(node, chan), port) {
+                        let layout_info = win.layout_info.get();
+                        match script_task.query_layout(layout_info,
+                                                       ContentBoxQuery(node, chan), port) {
                             Ok(ContentBoxResponse(rect)) => {
                                 Some(ClientRect::new(
+                                         win,
                                          rect.origin.y.to_f32(),
                                          (rect.origin.y + rect.size.height).to_f32(),
                                          rect.origin.x.to_f32(),

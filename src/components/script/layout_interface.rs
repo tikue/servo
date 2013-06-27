@@ -8,7 +8,7 @@
 
 use dom::node::{AbstractNode, ScriptView, LayoutView};
 use dom::event::Event;
-use script_task::{ScriptMsg, ScriptChan};
+use script_task::{ScriptChan};
 
 use core::comm::{Chan, SharedChan};
 use geom::rect::Rect;

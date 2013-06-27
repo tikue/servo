@@ -10,6 +10,8 @@ use dom::domparser::DOMParser;
 use js::jsapi::{JSContext, JSObject, JSVal};
 use js::glue::bindgen::{RUST_OBJECT_TO_JSVAL};
 
+use script_task::LayoutInfo;
+
 impl CacheableWrapper for DOMParser {
     fn get_wrappercache(&mut self) -> &mut WrapperCache {
         unsafe { cast::transmute(&self.wrapper) }
@@ -22,7 +24,7 @@ impl CacheableWrapper for DOMParser {
 }
 
 impl BindingObject for DOMParser {
-    fn GetParentObject(&self, _cx: *JSContext) -> @mut CacheableWrapper {
+    fn GetParentObject(&self, _layout_info: *LayoutInfo) -> @mut CacheableWrapper {
         return self.owner as @mut CacheableWrapper;
     }
 }

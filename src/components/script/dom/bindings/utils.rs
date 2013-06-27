@@ -4,7 +4,7 @@
 
 use dom::bindings::node;
 use dom::node::{AbstractNode, ScriptView};
-use script_task::task_from_context;
+use script_task::{task_from_context, LayoutInfo};
 
 use core::cast;
 use core::hashmap::HashMap;
@@ -633,7 +633,7 @@ pub fn WrapNativeParent(cx: *JSContext, scope: *JSObject, mut p: @mut CacheableW
 }
 
 pub trait BindingObject {
-    fn GetParentObject(&self, cx: *JSContext) -> @mut CacheableWrapper;
+    fn GetParentObject(&self, layout_info: *LayoutInfo) -> @mut CacheableWrapper;
 }
 
 pub fn GetPropertyOnPrototype(cx: *JSContext, proxy: *JSObject, id: jsid, found: *mut bool,

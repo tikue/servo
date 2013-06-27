@@ -23,12 +23,17 @@ pub struct Engine {
     compositor_chan: CompositorChan,
     resource_task: ResourceTask,
     image_cache_task: ImageCacheTask,
-    pipelines: HashMap<str, Pipeline>,
+    pipelines: HashMap<uint, Pipeline>,
     next_id: uint,
     current_token_holder: Option<RenderChan>,
     next_token_holder: Option<uint>,
     profiler_chan: ProfilerChan,
     opts: Opts,
+}
+
+pub struct NavigationContext {
+    priv previous: ~[(Url, Pipeline)],
+    priv next: ~[(Url, Pipeline)],
 }
 
 pub struct Pipeline {
@@ -121,35 +126,25 @@ impl Engine {
     fn handle_request(&mut self, request: Msg) -> bool {
         match request {
             LoadUrlMsg(url) => {
-                let pipeline = match self.pipelines.find(url.host) {
-                    None => {
-                        let pipeline = Pipeline::create(self.compositor_chan.clone(),
-                                         self.resource_chan.clone(),
-                                         self.image_cache_task.clone());
-                        self.pipelines.insert(url.host, pipeline);
-                        pipeline
-                    }
-                    Some(pipeline) => pipeline
-                };
+                let script_id = self.get_next_id();
+                let pipeline = Pipeline::create(self.compositor_chan.clone(),
+                                                self.resource_chan.clone(),
+                                                self.image_cache_task.clone());
+                self.pipelines.insert(pipeline_id, pipeline);
                 
                 if url.path.ends_with(".js") {
                     pipeline.script_chan.send(ExecuteMsg(url));
                 } else {
-                    let presentation_id = self.get_next_id();
-                    let presentation = Presentation::create(presentation_id,
-                                                            self.chan.clone(),
+                    let presentation = Presentation::create(self.chan.clone(),
                                                             pipeline.script_chan.clone(),
                                                             self.compositor_chan.clone(),
                                                             self.image_cache_task.clone(),
                                                             self.resource_task.clone(),
                                                             self.profiler_chan.clone(),
                                                             copy self.opts);
-                    pipeline.script_chan.send(LoadMsg(presentation_id,
-                                                      presentation.layout_chan.clone(),
-                                                      url));
+                    pipeline.script_chan.send(LoadMsg(presentation.layout_chan.clone(), url));
                     self.next_token_holder = Some(pipeline_id);
                 }
-                self.pipelines.insert(pipeline_id, pipeline);
             }
 
             RendererReadyMsg(pipeline_id) => {

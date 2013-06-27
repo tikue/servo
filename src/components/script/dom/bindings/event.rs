@@ -5,16 +5,16 @@
 use dom::bindings::codegen::EventBinding;
 use dom::bindings::utils::{CacheableWrapper, WrapperCache, BindingObject, DerivedWrapper};
 use dom::event::Event_;
-use script_task::{task_from_context, global_script_context};
+use dom::window::Window;
+use script_task::{global_script_context, LayoutInfo};
 
 use js::glue::bindgen::RUST_OBJECT_TO_JSVAL;
 use js::jsapi::{JSObject, JSContext, JSVal};
 
 pub impl Event_ {
-    pub fn init_wrapper(@mut self) {
+    pub fn init_wrapper(@mut self, owner: &Window) {
         let script_context = global_script_context();
         let cx = script_context.js_compartment.cx.ptr;
-        let owner = script_context.root_frame.get_ref().window;
         let cache = owner.get_wrappercache();
         let scope = cache.get_wrapper();
         self.wrap_object_shared(cx, scope);
@@ -33,10 +33,9 @@ impl CacheableWrapper for Event_ {
 }
 
 impl BindingObject for Event_ {
-    fn GetParentObject(&self, cx: *JSContext) -> @mut CacheableWrapper {
-        let script_context = task_from_context(cx);
+    fn GetParentObject(&self, layout_info: *LayoutInfo) -> @mut CacheableWrapper {
         unsafe {
-            (*script_context).root_frame.get_ref().window as @mut CacheableWrapper
+            (*layout_info).root_frame.window as @mut CacheableWrapper
         }
     }
 }

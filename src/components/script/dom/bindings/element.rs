@@ -24,6 +24,8 @@ use js::rust::{Compartment, jsobj};
 use js::{JS_ARGV, JSPROP_ENUMERATE, JSPROP_SHARED, JSVAL_NULL};
 use js::{JS_THIS_OBJECT, JS_SET_RVAL, JSPROP_NATIVE_ACCESSORS};
 
+use servo_util::tree::TreeNodeRef;
+
 extern fn finalize(_fop: *JSFreeOp, obj: *JSObject) {
     debug!("element finalize: %x!", obj as uint);
     unsafe {
@@ -218,7 +220,11 @@ extern fn HTMLImageElement_getWidth(cx: *JSContext, _argc: c_uint, vp: *mut JSVa
             ElementNodeTypeId(HTMLImageElementTypeId) => {
                 let script_context = task_from_context(cx);
                 let (port, chan) = comm::stream();
-                match (*script_context).query_layout(ContentBoxQuery(node, chan), port) {
+                let layout_info = do node.with_base |node| {
+                    node.owner_doc.get().window.get().layout_info.get()
+                };
+                match (*script_context).query_layout(layout_info,
+                                                     ContentBoxQuery(node, chan), port) {
                     Ok(ContentBoxResponse(rect)) => rect.size.width.to_px(),
                     Err(()) => 0
                 }

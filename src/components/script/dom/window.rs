@@ -6,7 +6,7 @@ use dom::bindings::utils::WrapperCache;
 use dom::bindings::window;
 
 use layout_interface::ReflowForScriptQuery;
-use script_task::{ExitMsg, FireTimerMsg, ScriptChan, ScriptTask};
+use script_task::{ExitMsg, FireTimerMsg, LayoutInfo, ScriptChan, ScriptTask};
 use core::comm::Chan;
 use js::jsapi::JSVal;
 use std::timer;
@@ -24,6 +24,7 @@ pub struct Window {
     timer_chan: Chan<TimerControlMsg>,
     script_chan: ScriptChan,
     script_task: *mut ScriptTask,
+    layout_info: Option<@LayoutInfo>,
     wrapper: WrapperCache
 }
 
@@ -83,7 +84,8 @@ pub impl Window {
 
     fn content_changed(&self) {
         unsafe {
-            (*self.script_task).reflow_all(ReflowForScriptQuery)
+            (*self.script_task).reflow_all(self.layout_info.get(),
+                                           ReflowForScriptQuery)
         }
     }
 
@@ -107,6 +109,7 @@ pub impl Window {
                 timer_chan
             },
             script_task: script_task,
+            layout_info: None,
         };
 
         unsafe {

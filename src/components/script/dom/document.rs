@@ -47,7 +47,7 @@ pub impl Document {
                 }
             }
         };
-        Some(HTMLCollection::new(elements))
+        Some(HTMLCollection::new(self.window.get(), elements))
     }
 
     fn content_changed(&self) {
